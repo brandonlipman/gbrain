@@ -537,3 +537,43 @@ test('every CREATE INDEX column in PGLITE_SCHEMA_SQL is covered by CREATE TABLE 
     );
   }
 }, 30000);
+
+test('every CREATE INDEX column in SCHEMA_SQL is covered by CREATE TABLE or Postgres bootstrap', async () => {
+  const { readFileSync } = await import('fs');
+  const { resolve: resolvePath } = await import('path');
+  const { SCHEMA_SQL } = await import('../src/core/schema-embedded.ts');
+
+  const enginePath = resolvePath(process.cwd(), 'src/core/postgres-engine.ts');
+  const engineSrc = readFileSync(enginePath, 'utf-8');
+
+  const tableColumns = parseBaseTableColumns(SCHEMA_SQL);
+  const indexRefs = parseIndexColumnReferences(SCHEMA_SQL);
+  const bootstrapAdds = parseAlterAddColumns(engineSrc);
+
+  const covered = (table: string, column: string): boolean => {
+    const cols = tableColumns.get(table);
+    if (cols && cols.has(column)) return true;
+    return bootstrapAdds.some(a => a.table === table && a.column === column);
+  };
+
+  expect(indexRefs).toContainEqual({ table: 'content_chunks', column: 'embedding_image' });
+  expect(bootstrapAdds).toContainEqual({ table: 'content_chunks', column: 'embedding_image' });
+  expect(covered('content_chunks', 'embedding_image')).toBe(true);
+
+  const uncovered: Array<{ table: string; column: string }> = [];
+  for (const ref of indexRefs) {
+    if (!covered(ref.table, ref.column)) {
+      uncovered.push(ref);
+    }
+  }
+
+  if (uncovered.length > 0) {
+    const list = uncovered.map(u => `  ${u.table}.${u.column}`).join('\n');
+    throw new Error(
+      `SCHEMA_SQL has ${uncovered.length} CREATE INDEX column reference(s) ` +
+      `that are neither in the table's CREATE TABLE body nor added by ` +
+      `Postgres applyForwardReferenceBootstrap:\n${list}\n\n` +
+      `Fix: extend applyForwardReferenceBootstrap in src/core/postgres-engine.ts.`,
+    );
+  }
+}, 30000);
